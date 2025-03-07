@@ -221,6 +221,7 @@ class KMeansClustering:
         # Create column colors in the same order as the columns in self.data_df
         self.col_colors = [condition_colour_map[condition_map[col]] for col in plot_data.columns]
 
+
         BOTTOM = 0.15
         RIGHT = 0.85
 

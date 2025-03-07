@@ -6,8 +6,8 @@ import multiprocessing
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from Rrvgo_submit import Rrvgo_submit
-from GO_dot_plot import GO_term_dot_plot
+from src.Rrvgo_submit import Rrvgo_submit
+from src.GO_dot_plot import GO_term_dot_plot
 
 class GSEAPy_Prerank():
     """
