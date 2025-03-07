@@ -6,6 +6,7 @@ Created on Wed Aug 30 15:34:12 2023
 """
 
 from src.common_classes import *
+from src.analysis_loop import AnalysisLoop
 
 class DIAnalyzer:
     """
@@ -82,6 +83,7 @@ class DIAnalyzer:
         self.format = data_source  # 'Spectronaut' or 'DIANN'
         self.column_mapping = config[self.format]  # Get the mapping for the selected format
         self.gh_token = config['gh_token']
+        self.gh_repo = config['gh_repo']
 
         # Initialize some vars
         self.report_data = {
@@ -240,9 +242,9 @@ class DIAnalyzer:
         my_analyses.run()
     
     def push_to_github(self):
-        repo_url = "https://github.com/lcynwoods/lcynwoods.github.io"  # Replace with your repository URL
+        repo_url = self.gh_repo
         folder_path = self.op_folder
-        token = self.gh_token  # Replace with your GitHub Personal Access Token
+        token = self.gh_token
         upload_html_to_github(repo_url, folder_path, token)
 
 

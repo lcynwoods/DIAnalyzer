@@ -1,4 +1,4 @@
-from common_classes import *
+from src.common_classes import *
 
 class EnrichrORA():
 
