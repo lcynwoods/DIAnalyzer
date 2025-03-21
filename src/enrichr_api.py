@@ -1,10 +1,16 @@
-from src.common_classes import *
+import sys
+from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from src.common_classes import *
+    
 class EnrichrORA():
 
     """Note: Enrichr uses a list of Entrez gene symbols as input. You should convert all gene names to uppercase."""
 
     def __init__(self,
+                 r_exe_path,
+                 rrvgo_script_path,
                  gene_list,
                  op_dir,
                  background,
@@ -12,9 +18,7 @@ class EnrichrORA():
                  intermediate_op_dir=None,
                  table_op_dir=None,
                  taxon_id=9606,
-                 gene_sets=['GO_Biological_Process_2023', 'GO_Cellular_Component_2023', 'GO_Molecular_Function_2023', 'MSigDB_Hallmark_2020'],
-                 r_exe_path="C:\\Program\\\ Files\\R\\R-4.3.1\\bin\\Rscript.exe", 
-                 rrvgo_script_path="C:\\Users\\lwoods\\Documents\\LW_scripts\\R Scripts\\rrvgo_analyser_v2.R"):
+                 gene_sets=['GO_Biological_Process_2023', 'GO_Cellular_Component_2023', 'GO_Molecular_Function_2023', 'MSigDB_Hallmark_2020']):
 
         self.gene_list = [gene.upper() for gene in gene_list]
         self.op_dir = op_dir
@@ -107,9 +111,10 @@ class EnrichrORA():
                         ontology = "MF"
                     elif "GO_Cellular_Component" in category:
                         ontology = "CC"
-
                     try:
                         rrvgo = Rrvgo_submit(
+                            self.r_exe_path,
+                            self.rrvgo_script_path,
                             inp_file=rrvgo_inp,
                             op_dir=self.intermediate_op_dir,
                             ontology=ontology,

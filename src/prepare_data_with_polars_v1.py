@@ -55,72 +55,91 @@ class PrepareData:
             self.fasta_mapping = mapping
 
     def load_report(self):
-        try:
-            spec_report_path = Path(self.spec_report)
-            if spec_report_path.suffix.lower() == '.parquet':
-                spec_full_df = pl.read_parquet(spec_report_path)
-            else:
-                spec_full_df = pl.read_csv(spec_report_path, separator='\t', encoding='latin-1',
-                    dtypes={'Decoy.Evidence': float,
-                            'PTM.Specific': float,
-                            'PTM.Localising':float,
-                            'PTM.Site.Confidence':float,
-                            'Lib.PTM.Site.Confidence':float,
-                            'IM':float,
-                            'iIM':float,
-                            'Predicted.IM':float,
-                            'Predicted.iIM':float,
-                            })
+        spec_report_path = Path(self.spec_report)
+        if spec_report_path.suffix.lower() == '.parquet':
+            spec_full_df = pl.read_parquet(spec_report_path)
+        else:
+            spec_full_df = pl.read_csv(spec_report_path, separator='\t', encoding='latin-1',
+                dtypes={'Decoy.Evidence': float,
+                        'PTM.Specific': float,
+                        'PTM.Localising':float,
+                        'PTM.Site.Confidence':float,
+                        'Lib.PTM.Site.Confidence':float,
+                        'IM':float,
+                        'iIM':float,
+                        'Predicted.IM':float,
+                        'Predicted.iIM':float,
+                        })
 
-            print("Headers before mapping:")
-            print(spec_full_df.columns)
+        print("Headers before mapping:")
+        print(spec_full_df.columns)
 
-            # Mapping columns
-            self.file_name_col = self.column_mapping['file_name_col']
-            self.protein_group_col = self.column_mapping['protein_group_col']
-            self.protein_ids_col = self.column_mapping['protein_ids_col']
-            self.genes_col = self.column_mapping['genes_col']
-            self.precursor_id_col = self.column_mapping['precursor_id_col']
-            self.precursor_quantity_col = self.column_mapping['precursor_quantity_col']
-            self.modified_sequence_col = self.column_mapping['modified_sequence_col']
-            self.protein_names_col = self.column_mapping['protein_names_col']
+        # Mapping columns
+        self.file_name_col = self.column_mapping['file_name_col']
+        self.protein_group_col = self.column_mapping['protein_group_col']
+        self.protein_ids_col = self.column_mapping['protein_ids_col']
+        self.genes_col = self.column_mapping['genes_col']
+        self.precursor_id_col = self.column_mapping['precursor_id_col']
+        self.precursor_quantity_col = self.column_mapping['precursor_quantity_col']
+        self.modified_sequence_col = self.column_mapping['modified_sequence_col']
+        self.protein_names_col = self.column_mapping['protein_names_col']
 
-            # Ensure that 'Run' is created correctly if it doesn't exist
-            if self.run_col not in spec_full_df.columns:
-                spec_full_df = spec_full_df.with_columns(
-                    (pl.col(self.file_name_col)
-                    .str.split('\\')
-                    .arr.get(-1)  # Use get(-1) to access the last element
-                    .str.replace('.raw', '')
-                    .str.replace('.mzML', '')
-                    ).alias(self.run_col)  # Apply alias at the end to name the resulting column
-                )
-
-            print("Headers after mapping:")
-            print(spec_full_df.columns)
-
+        # Ensure that 'Run' is created correctly if it doesn't exist
+        if self.run_col not in spec_full_df.columns:
             spec_full_df = spec_full_df.with_columns(
-                pl.col(self.genes_col).fill_null("gene")
+                (pl.col(self.file_name_col)
+                .str.split('\\')
+                .arr.get(-1)  # Use get(-1) to access the last element
+                .str.replace('.raw', '')
+                .str.replace('.mzML', '')
+                ).alias(self.run_col)  # Apply alias at the end to name the resulting column
             )
-            replaced_rows = spec_full_df.filter(pl.col(self.genes_col) == "gene")
 
-            # Step 5: Print the rows that had null values replaced
-            print("Rows where null values have been replaced with 'gene':")
-            print(replaced_rows)
-            self.null_count=0
-            # Apply any necessary transformations
-            spec_full_df = self.transform_columns(spec_full_df)
+        print("Headers after mapping:")
+        print(spec_full_df.columns)
 
-            print(f'2. The length is: {len(spec_full_df)} with headers: {spec_full_df.columns} after mapping and fixing columns')
-            print(spec_full_df.head())
-            self.spec_full_df = spec_full_df
-            replaced_rows = spec_full_df.filter(pl.col(self.genes_col) == "gene")
+        spec_full_df = spec_full_df.with_columns(
+            pl.col(self.genes_col).fill_null("gene")
+        )
+        replaced_rows = spec_full_df.filter(pl.col(self.genes_col) == "gene")
 
-            # Step 5: Print the rows that had null values replaced with 'gene':")
-            print(replaced_rows)
-        except Exception as e:
-            logging.error(f"Error in load_report: {e}")
-            raise
+        # Step 5: Print the rows that had null values replaced
+        print("Rows where null values have been replaced with 'gene':")
+        print(replaced_rows)
+        self.null_count=0
+        # Apply any necessary transformations
+        def fix_protein_accessions(s):
+            if not s:
+                self.null_count +=1
+                return f"protein_{self.null_count}"
+            return ';'.join(sorted(set(protein.strip() for protein in s.split(','))))
+
+        def fix_genes(s):
+            if not s:
+                return "gene"
+            return ';'.join(sorted(set(gene.strip().split('_')[0] for gene in s.split(','))))
+
+        def split_for_species(s):
+            if not s:
+                return "Unknown"
+            return s.split('_')[-1].split(";")[0] if '_' in s else "Unknown"
+
+        # Convert columns to lists, apply the transformation, and then convert back to Series
+        spec_full_df = spec_full_df.with_columns([
+            pl.Series(self.protein_group_col, [fix_protein_accessions(x) for x in spec_full_df[self.protein_group_col].to_list()]).alias(self.protein_group_col),
+            pl.Series(self.genes_col, [fix_genes(x) for x in spec_full_df[self.genes_col].to_list()]).alias(self.genes_col),
+            pl.Series(self.protein_names_col, [split_for_species(x) for x in spec_full_df[self.protein_names_col].to_list()]).alias(self.species_col)
+        ])
+
+        print(f'2. The length is: {len(spec_full_df)} with headers: {spec_full_df.columns} after mapping and fixing columns')
+        print(spec_full_df.head())
+        self.spec_full_df = spec_full_df
+        replaced_rows = spec_full_df.filter(pl.col(self.genes_col) == "gene")
+
+        # Step 5: Print the rows that had null values replaced
+        print("Rows where null values have been replaced with 'gene':")
+        print(replaced_rows)
+
 
     def make_conditions_df(self):
         # Load the conditions DataFrame from an Excel file
@@ -378,7 +397,8 @@ class PrepareData:
         self.spec_full_df = self.spec_full_df.join(average_peptide_pivot, on='Reattributed.Protein', how='left')
         replaced_rows = self.spec_full_df.filter(pl.col(self.genes_col) == "gene")
 
-        # Step 5: Print the rows that had null values replaced with 'gene':")
+        # Step 5: Print the rows that had null values replaced
+        print("Rows where null values have been replaced with 'gene':")
         print(replaced_rows)
 
     def write_output(self):
@@ -402,29 +422,3 @@ class PrepareData:
         logging.info('Calculated average peptides')
         #self.write_output()
         return self.spec_full_df, self.conditions_df
-
-    def transform_columns(self, df):
-        self.null_count = 0
-
-        def fix_protein_accessions(s):
-            if not s:
-                self.null_count += 1
-                return f"protein_{self.null_count}"
-            return ';'.join(sorted(set(protein.strip() for protein in s.split(','))))
-
-        def fix_genes(s):
-            if not s:
-                return "gene"
-            return ';'.join(sorted(set(gene.strip().split('_')[0] for gene in s.split(','))))
-
-        def split_for_species(s):
-            if not s:
-                return "Unknown"
-            return s.split('_')[-1].split(";")[0] if '_' in s else "Unknown"
-
-        df = df.with_columns([
-            pl.Series(self.protein_group_col, [fix_protein_accessions(x) for x in df[self.protein_group_col].to_list()]).alias(self.protein_group_col),
-            pl.Series(self.genes_col, [fix_genes(x) for x in df[self.genes_col].to_list()]).alias(self.genes_col),
-            pl.Series(self.protein_names_col, [split_for_species(x) for x in df[self.protein_names_col].to_list()]).alias(self.species_col)
-        ])
-        return df

@@ -1,11 +1,13 @@
 import gseapy as gp
 import pandas as pd
+import sys
 import re
 import os
 import multiprocessing
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src.Rrvgo_submit import Rrvgo_submit
 from src.GO_dot_plot import GO_term_dot_plot
 
@@ -14,7 +16,9 @@ class GSEAPy_Prerank():
     A structured pipeline for running GSEAPrerank with error handling, RRVGO support, and dot plot visualization.
     """
 
-    def __init__(self, 
+    def __init__(self,
+                 r_exe_path,
+                 rrvgo_script_path,
                  logFC_data_file, 
                  analysis_group, 
                  op_dir,
@@ -22,9 +26,10 @@ class GSEAPy_Prerank():
                  table_op_dir=None,
                  taxon_id=9606,
                  gene_sets=['GO_Biological_Process_2023', 'GO_Cellular_Component_2023', 'GO_Molecular_Function_2023', 'MSigDB_Hallmark_2020'],
-                 r_exe_path="C:\\Program Files\\R\\R-4.3.1\\bin\\Rscript.exe", 
-                 rrvgo_script_path="C:\\Users\\lwoods\\Documents\\LW_scripts\\R Scripts\\rrvgo_analyser_v2.R"):
-
+                 ):
+        
+        self.r_exe_path = Path(r_exe_path)
+        self.rrvgo_script_path = Path(rrvgo_script_path)
         self.op_dir = Path(op_dir)
         self.intermediate_op_dir = Path(intermediate_op_dir) if intermediate_op_dir else self.op_dir
         self.table_op_dir = Path(table_op_dir) if table_op_dir else self.op_dir
@@ -34,9 +39,6 @@ class GSEAPy_Prerank():
         if self.taxon_id == 10090:
             self.species = 'mouse'
         self.gene_sets = gene_sets
-
-        self.r_exe_path = r_exe_path
-        self.rrvgo_script_path = str(Path(rrvgo_script_path))
 
         # GSEA Parameters
         self.logFC_data_file = logFC_data_file
@@ -167,6 +169,8 @@ class GSEAPy_Prerank():
 
                     try:
                         rrvgo = Rrvgo_submit(
+                            r_exe_path=self.r_exe_path,
+                            rrvgo_script_path=self.rrvgo_script_path,
                             inp_file=rrvgo_inp,
                             op_dir=self.intermediate_op_dir,
                             ontology=ontology,

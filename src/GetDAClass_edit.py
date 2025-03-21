@@ -1,4 +1,3 @@
-
 import textwrap 
 import pandas as pd
 import numpy as np
@@ -81,10 +80,8 @@ class GetDA:
             self.contaminant_ids = [line.strip().lstrip('>').split("|")[1] for line in lines if line.startswith('>')]
            
     def make_op_folder(self):
-        (Path(self.op_folder) / f'{self.sheet}').mkdir(parents=True, exist_ok=True)
-        self.op_folder = Path(self.op_folder) / f'{self.sheet}'
-        (Path(self.table_op_folder) / f'{self.sheet}').mkdir(parents=True, exist_ok=True)
-        self.table_op_folder = Path(self.table_op_folder) / f'{self.sheet}'
+        Path(self.op_folder).mkdir(parents=True, exist_ok=True)
+        Path(self.table_op_folder).mkdir(parents=True, exist_ok=True)
 
     def mark_contaminants_dataframe(self):
         def mark_contaminants(row, contaminants_list):
@@ -105,8 +102,16 @@ class GetDA:
 
             return row
 
-        if self.mark_contams == True:
-            self.ordered_dataframe = self.ordered_dataframe.apply(mark_contaminants, args=(self.contaminant_ids,), axis=1)
+        if self.mark_contams:
+            print("Marking contaminants in the DataFrame...")
+            self.ordered_dataframe = self.ordered_dataframe.apply(
+                mark_contaminants, args=(self.contaminant_ids,), axis=1
+            )
+            print(self.ordered_dataframe['is_contaminant'].value_counts())
+            # Debugging: Check if the column exists
+            if 'is_contaminant' not in self.ordered_dataframe.columns:
+                raise ValueError("The 'is_contaminant' column was not created in the DataFrame.")
+            print("Contaminants marked successfully.")
 
     def mark_removed_prots(self):
 
@@ -139,169 +144,33 @@ class GetDA:
     def find_logFC_thresh(self):
         self.logFC_cutoff_dict = {}
 
-        # Case 1: If Log2FC_cutoff is a list of numbers
-        if isinstance(self.Log2FC_cutoff, list):
-            for col, logFC in zip(self.comparison_columns, self.Log2FC_cutoff):
-                self.logFC_cutoff_dict[col] = logFC
+        for col, DA_direction in zip(self.comparison_columns, self.DA_directions):
+            log2FC_col = f"{col}_logFC"
 
-        # Case 2: If Log2FC_cutoff is a string and "auto", calculate the ECDF-derived logFC
-        elif isinstance(self.Log2FC_cutoff, str) and self.Log2FC_cutoff.lower() == "auto":
-            for col in self.comparison_columns:
-                log2FC_col = f"{col}_logFC"
-                positive_logFC_values = self.ordered_dataframe[log2FC_col].abs()
-                ecdf_positive = ECDF(positive_logFC_values)
+            if isinstance(self.Log2FC_cutoff, str) and self.Log2FC_cutoff.lower() == "auto":
+                if DA_direction.lower() == "right":
+                    values = self.ordered_dataframe[self.ordered_dataframe[log2FC_col] > 0][log2FC_col]
+                elif DA_direction.lower() == "left":
+                    values = self.ordered_dataframe[self.ordered_dataframe[log2FC_col] < 0][log2FC_col].abs()
+                else:  # "both"
+                    values = self.ordered_dataframe[log2FC_col].abs()
 
-                x_ecdf_positive = np.linspace(min(positive_logFC_values), max(positive_logFC_values))
-                y_ecdf_positive = ecdf_positive(x_ecdf_positive)
-
-                delta_y_ecdf_positive = np.diff(y_ecdf_positive)
+                ecdf = ECDF(values)
+                x_ecdf = np.linspace(min(values), max(values))
+                y_ecdf = ecdf(x_ecdf)
+                delta_y_ecdf = np.diff(y_ecdf)
 
                 # Find the steepest point in the ECDF curve
-                steepest_point_idx = np.argmax(delta_y_ecdf_positive)
+                steepest_point_idx = np.argmax(delta_y_ecdf)
+                change_point_idx = np.where(delta_y_ecdf[steepest_point_idx:] <= self.slope)[0][0] + steepest_point_idx
+                change_point_value = x_ecdf[change_point_idx]
 
-                # Find the change point after the steepest point
-                change_point_idx_ecdf_positive = np.where(delta_y_ecdf_positive[steepest_point_idx:] <= self.slope)[0][0] + steepest_point_idx
-                change_point_value_ecdf_positive = x_ecdf_positive[change_point_idx_ecdf_positive]
+                self.logFC_cutoff_dict[col] = change_point_value
 
-                # Plot the ECDF
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=x_ecdf_positive, y=y_ecdf_positive, mode='lines', name='Positive ECDF', line=dict(color='black')))
-                
-                fig.add_annotation(
-                    x=change_point_value_ecdf_positive,
-                    y=y_ecdf_positive[change_point_idx_ecdf_positive],
-                    text=f'Change Point: {change_point_value_ecdf_positive:.2f}',
-                    showarrow=True,
-                    arrowhead=4,
-                    ax=-40,
-                    ay=-40,
-                    xanchor="right",
-                    standoff=10,
-                    font=dict(color="#FF5A00")
-                )
-
-                fig.add_shape(type="line", x0=change_point_value_ecdf_positive,
-                            x1=change_point_value_ecdf_positive, y0=0, y1=1,
-                            line=dict(color="#FF5A00", width=2, dash="dash"),
-                            name=f'Change Point at {self.slope}: {change_point_value_ecdf_positive:.2f}',
-                            )
-
-                fig.update_layout(
-                    xaxis_title=f'log2 fold change', 
-                    yaxis_title=f'ECDF of positive values for {col}',
-                    plot_bgcolor='#EEEAE8', 
-                    title=f"ECDF for {col.replace('_', ' ')}<br><br><sup>Log2FC Threshold: Post-Maximum ECDF Rise ≤ {self.slope}.<sup>",
-                    font=dict(color='black'),
-                    title_font=dict(color='black'),
-                    legend_title_font=dict(color='black')
-                )
-
-                config = {
-                    'toImageButtonOptions': {
-                        'format': 'png',  # one of png, svg, jpeg, webp
-                        'filename': 'ECDF_plot',
-                        'scale': 2  # Multiply title/legend/axis/canvas sizes by this factor
-                    }
-                }
-
-                # Save the plot
-                fig.write_html(f"{self.op_folder}/{col}_ECDF_plot.html", config=config)
-                self.logFC_cutoff_dict[col] = change_point_value_ecdf_positive
-
-        # Case 3: If Log2FC_cutoff is a number, apply it directly
-        elif isinstance(self.Log2FC_cutoff, (float, int)):
-            for col in self.comparison_columns:
+            elif isinstance(self.Log2FC_cutoff, (float, int)):
                 self.logFC_cutoff_dict[col] = self.Log2FC_cutoff
-
-        # If no valid cutoff is provided, print an error message
-        else:
-            print("Must indicate logFC cutoff preference.")
-
-    def find_logFC_thresh_old(self):
-        if not isinstance(self.Log2FC_cutoff,float):
-            self.logFC_cutoff_dict = {}
-            if isinstance(self.Log2FC_cutoff, list):
-                for col,logFC in zip(self.comparison_columns,self.Log2FC_cutoff):
-                    self.logFC_cutoff_dict[col] = logFC
-        elif isinstance(self.Log2FC_cutoff,float):
-            for col,logFC in zip(self.comparison_columns,self.Log2FC_cutoff):
-                self.logFC_cutoff_dict[col] = logFC
-        elif isinstance((self.Log2FC_cutoff,str) and (str(self.Log2FC_cutoff).lower()=="auto")):
-            self.logFC_cutoff_dict = {}
-            for col in self.comparison_columns:
-                log2FC_col = f"{col}_logFC"
-                # Calculate the ECDF
-                # Two options: symmetrical and priority
-                # Priority
-                # positive_logFC_values = self.ordered_dataframe[(self.ordered_dataframe[log2FC_col] > 0)][log2FC_col]
-                # Symmetrical
-                positive_logFC_values = self.ordered_dataframe[log2FC_col].abs()
-                ecdf_positive = ECDF(positive_logFC_values)
-
-                # Generate ECDF values for the positive inverted data
-                x_ecdf_positive = np.linspace(min(positive_logFC_values), max(positive_logFC_values))
-                y_ecdf_positive = ecdf_positive(x_ecdf_positive)
-
-                # Calculate the change in ECDF values for the positive inverted data
-                delta_y_ecdf_positive = np.diff(y_ecdf_positive)
-
-                # Find the steepest point in the curve
-                steepest_point_idx = np.argmax(delta_y_ecdf_positive)
-
-                # Now look for change points only after this steepest point
-                change_point_idx_ecdf_positive = np.where(delta_y_ecdf_positive[steepest_point_idx:] <= self.slope)[0][0] + steepest_point_idx
-                change_point_value_ecdf_positive = x_ecdf_positive[change_point_idx_ecdf_positive]
-
-                # Plot the ECDF for the positive inverted data with change points highlighted
-
-                fig = go.Figure()
-
-                fig.add_trace(go.Scatter(x=x_ecdf_positive, y=y_ecdf_positive, mode='lines', name='Positive ECDF', line=dict(color='black')))
-                
-                # Annotation for change point
-                fig.add_annotation(
-                    x=change_point_value_ecdf_positive,
-                    y=y_ecdf_positive[change_point_idx_ecdf_positive],
-                    text=f'Change Point: {change_point_value_ecdf_positive:.2f}',
-                    showarrow=True,
-                    arrowhead=4,
-                    ax=-40,
-                    ay=-40,
-                    xanchor="right",   # Ensure the x-coordinate is the right edge of the text box
-                    standoff=10,       # Offset the arrow tip by 10 pixels
-                    font=dict(color="#FF5A00")
-                )
-
-                fig.add_shape(type="line", x0=change_point_value_ecdf_positive,
-                            x1=change_point_value_ecdf_positive, y0=0, y1=1,
-                            line=dict(color="#FF5A00", width=2, dash="dash"),
-                            name=f'Change Point at {self.slope}: {change_point_value_ecdf_positive:.2f}',
-                            )     
-                
-                fig.update_layout(
-                            xaxis_title=f'log2 fold change', yaxis_title=f'ECDF of positive values for {col}',
-                            template='plotly_white',
-                            title=f"ECDF for {col.replace('_',' ')}<br><br><sup>Log2FC Threshold: Post-Maximum ECDF Rise ≤ {self.slope}.<sup>",
-                            font=dict(color='black'),
-                            title_font=dict(color='black'),
-                            legend_title_font=dict(color='black')
-                        )
-                
-                
-                config = {
-                  'toImageButtonOptions': {
-                    'format': 'png', # one of png, svg, jpeg, webp
-                    'filename': 'ECDF_plot',
-                    'scale': 2 # Multiply title/legend/axis/canvas sizes by this factor
-                  }
-                }
-                #fig.show(config=config)
-                #fig.write_image(f"{self.op_folder}/{col}_ECDF_plot.png", width=800, height=400, scale=6)
-                fig.write_html(f"{self.op_folder}/{col}_ECDF_plot.html",config=config)
-                self.logFC_cutoff_dict[col] = change_point_value_ecdf_positive
-        else:
-            print("Must indicate logFC cutoff preference.")
-
+            else:
+                print("Must indicate logFC cutoff preference.")
 
     def calculate_alternative_FDR(self, p_val_list, p_val_thresh):
         # Adjust p-values using the BH method
@@ -324,101 +193,116 @@ class GetDA:
     
             
     def filter_and_save_interactors(self):
-        self.interactors_dict = {}  # Dictionary to store filtered interactors dataframes
+        self.interactors_dict = {}
         self.right_dict = {}
         self.left_dict = {}
-        self.BH_FDR_dict = {}
+        self.BH_FDR_dict = {}  # Initialize the BH_FDR_dict
         self.consolidated_df = self.ordered_dataframe.copy()
-        columns_to_remove = [col for col in self.consolidated_df if "_logFC" in col or "_pval" in col]
-        self.consolidated_df = self.consolidated_df.drop(columns=columns_to_remove)
-        print("HERE")
-        print(self.consolidated_df.columns)
-        print(self.comparison_columns)
-        for col in self.comparison_columns:
-            right_cond = col.split('_vs_')[0]
-            left_cond = col.split('_vs_')[1]
-            
-            Log2FC_cutoff = self.logFC_cutoff_dict[col]
+
+        for col, DA_direction in zip(self.comparison_columns, self.DA_directions):
             log2FC_col = f"{col}_logFC"
             pval_col = f"{col}_pval"
+            Log2FC_cutoff = self.logFC_cutoff_dict[col]
 
-            compare_df_cols = ['Protein_Group', 'Genes']
-            if self.mark_contams == True:
-                compare_df_cols.append('is_contaminant')
+            self.consolidated_df.drop(columns=[log2FC_col, pval_col], inplace=True, errors='ignore')
 
-            compare_dataframe = self.ordered_dataframe[compare_df_cols + [log2FC_col, pval_col, "Removed?"]]
+            compare_cols = ['Protein_Group', 'Genes',  log2FC_col, pval_col, "Removed?"]
+            if self.mark_contams:
+                compare_cols.append('is_contaminant')
 
-            pvals = compare_dataframe[pval_col].values
-            #reject, pvals_corrected, _, _ = multipletests(pvals, alpha=self.pval_cutoff, method='fdr_bh')
+            compare_dataframe = self.ordered_dataframe[compare_cols]
 
-            # Merge FDR-corrected p-values back to the main dataframe
-            # Currently, performing p-value correction in R
-            compare_dataframe = compare_dataframe.assign(fdr_corrected_pvals=pvals)
-            FDR_df = compare_dataframe[abs(compare_dataframe[log2FC_col]) >= Log2FC_cutoff]
-            print(FDR_df)
-            BH_FDR = self.calculate_alternative_FDR(FDR_df[pval_col].values.tolist(),self.pval_cutoff)
-            self.BH_FDR_dict[col]=BH_FDR
+            # Create the p_val_list for FDR calculation
+            # Include all p-values for proteins that pass the logFC threshold
+            if DA_direction.lower() == "right":
+                p_val_list = compare_dataframe[compare_dataframe[log2FC_col] >= Log2FC_cutoff][pval_col].tolist()
+            elif DA_direction.lower() == "left":
+                p_val_list = compare_dataframe[compare_dataframe[log2FC_col] <= -Log2FC_cutoff][pval_col].tolist()
+            elif DA_direction.lower() == "both":
+                p_val_list = compare_dataframe[
+                    (compare_dataframe[log2FC_col] >= Log2FC_cutoff) |
+                    (compare_dataframe[log2FC_col] <= -Log2FC_cutoff)
+                ][pval_col].tolist()
 
-            # Apply filtering criteria based on Log2FC and p-values
-            right_df = compare_dataframe[
-                (compare_dataframe[log2FC_col] >= Log2FC_cutoff) & 
-                (compare_dataframe[pval_col] <= self.pval_cutoff) &
-                (compare_dataframe['Removed?'] == "No")
+            # Calculate the FDR for this comparison using the calculate_alternative_FDR function
+            BH_fdr = self.calculate_alternative_FDR(p_val_list, self.pval_cutoff)
+            self.BH_FDR_dict[col] = BH_fdr  # Store the FDR for this comparison
+
+            # Filter interactors based on logFC and p-value thresholds
+            if DA_direction.lower() == "right":
+                filtered_df = compare_dataframe[
+                    (compare_dataframe[log2FC_col] >= Log2FC_cutoff) &
+                    (compare_dataframe[pval_col] <= self.pval_cutoff) &
+                    (compare_dataframe['Removed?'] == "No") &
+                    (compare_dataframe['is_contaminant'] == "No")
                 ]
+                self.right_dict[col] = filtered_df
+                self.interactors_dict[col] = filtered_df
 
-            left_df = compare_dataframe[
-                (compare_dataframe[log2FC_col] <= -Log2FC_cutoff) & 
-                (compare_dataframe[pval_col] <= self.pval_cutoff) &
-                (compare_dataframe['Removed?'] == "No")]
+            elif DA_direction.lower() == "left":
+                filtered_df = compare_dataframe[
+                    (compare_dataframe[log2FC_col] <= -Log2FC_cutoff) &
+                    (compare_dataframe[pval_col] <= self.pval_cutoff) &
+                    (compare_dataframe['Removed?'] == "No") &
+                    (compare_dataframe['is_contaminant'] == "No")
+                ]
+                self.left_dict[col] = filtered_df
+                self.interactors_dict[col] = filtered_df
 
-            if self.mark_contams == True:
-                right_df = right_df[right_df['is_contaminant'] == "No"]
-                left_df = left_df[left_df['is_contaminant'] == "No"]
-        
+            elif DA_direction.lower() == "both":
+                right_df = compare_dataframe[
+                    (compare_dataframe[log2FC_col] >= Log2FC_cutoff) &
+                    (compare_dataframe[pval_col] <= self.pval_cutoff) &
+                    (compare_dataframe['Removed?'] == "No") &
+                    (compare_dataframe['is_contaminant'] == "No")
+                ]
+                left_df = compare_dataframe[
+                    (compare_dataframe[log2FC_col] <= -Log2FC_cutoff) &
+                    (compare_dataframe[pval_col] <= self.pval_cutoff) &
+                    (compare_dataframe['Removed?'] == "No") &
+                    (compare_dataframe['is_contaminant'] == "No")
+                ]
+                self.right_dict[col] = right_df
+                self.left_dict[col] = left_df
+                self.interactors_dict[col] = pd.concat([right_df, left_df])
 
-            right_df[f"{col}_differential_abundance (FDR={(BH_FDR*100):.2f}%)"] = right_cond                
-            left_df[f"{col}_differential_abundance (FDR={(BH_FDR*100):.2f}%)"] = left_cond
+            result_col = f"{col} DA (FDR={BH_fdr:.2%})"
 
-            all_sig_df = pd.concat([right_df,left_df,], axis = 0)
-
-            print("HERE")
-            print(all_sig_df)
-
-            self.consolidated_df = pd.merge(self.consolidated_df, self.ordered_dataframe[
-                ['Protein_Group', log2FC_col, pval_col]],
-                on='Protein_Group', how='left')
+            def pick_condition(row, DA_direction, log2FC_col, pval_col, Log2FC_cutoff, pval_cutoff, absolute=False, col=None):
+                num = "Up"
+                denom = "Down"
+                none = "No"
+                if absolute:
+                    num = col.split("_vs_")[0]
+                    denom = col.split("_vs_")[1]
+                    none = "NA"
+                if row[log2FC_col] >= Log2FC_cutoff and row[pval_col] <= pval_cutoff:
+                    if DA_direction.lower() in ["right", "both"]:
+                        return num
+                elif row[log2FC_col] <= -Log2FC_cutoff and row[pval_col] <= pval_cutoff:
+                    if DA_direction.lower() in ["left", "both"]:
+                        return denom
+                return none
             
-            print("HERE")
+            self.consolidated_df = self.consolidated_df.merge(self.ordered_dataframe[['Protein_Group', log2FC_col, pval_col]], on='Protein_Group', how='left')
             print(self.consolidated_df.columns)
-            
-            self.consolidated_df = pd.merge(self.consolidated_df, all_sig_df[
-                ['Protein_Group', f"{col}_differential_abundance (FDR={(BH_FDR*100):.2f}%)"]
-                ],
-                on='Protein_Group', how='left')
-            
-            print("HERE")
-            print(self.consolidated_df.columns)
-            
-            self.consolidated_df[f"{col}_differential_abundance (FDR={(BH_FDR*100):.2f}%)"].fillna("No", inplace=True)
-
-            self.right_dict[col] = right_df
-            self.left_dict[col] = left_df
-            self.interactors_dict[col] = all_sig_df
-            
+            self.consolidated_df[f'{result_col}'] = self.consolidated_df.apply(
+                pick_condition,
+                args=(DA_direction, log2FC_col, pval_col, Log2FC_cutoff, self.pval_cutoff),
+                col=col,
+                axis=1
+            )
+            self.consolidated_df['Condition increased'] = self.consolidated_df.apply(
+                pick_condition,
+                args=(DA_direction, log2FC_col, pval_col, Log2FC_cutoff, self.pval_cutoff),
+                absolute=True, col=col,
+                axis=1
+            )
+            # Save filtered interactors
             interactors_tsv_path = f'{self.op_folder}/{col}_logFC_compare_results.tsv'
-            interactors_excel_path = f'{self.op_folder}/{col}_logFC_compare_results.xlsx'
-            
-            all_sig_df[['Protein_Group', 'Genes'] + [log2FC_col, pval_col]].to_csv(interactors_tsv_path, sep="\t", index=False)
-            all_sig_df[['Protein_Group', 'Genes'] + [log2FC_col, pval_col]].to_excel(interactors_excel_path, index=False)
+            self.interactors_dict[col].to_csv(interactors_tsv_path, sep="\t", index=False)
+            self.consolidated_df.to_excel(f'{self.table_op_folder}/consolidated_results.xlsx', index=False)
 
-            print("Differentially abundant proteins saved to:", interactors_tsv_path, "and", interactors_excel_path)
-        
-        print(self.interactors_dict)
-        #orig_df = pd.read_csv(self.bkgd_file, sep="\t")
-        
-        full_consolidated_excel_path = f'{self.table_op_folder}/consolidated_results.xlsx'
-        self.consolidated_df.to_excel(full_consolidated_excel_path, index=False)
-        
     def create_volcano_plot(self):
 
         def convert_to_percentage(condition):
@@ -438,7 +322,7 @@ class GetDA:
                 # Return the original condition if it doesn't match the expected pattern
                 return condition
 
-        for comparison in self.comparison_columns:
+        for comparison, DA_direction in zip(self.comparison_columns,self.DA_directions):
 
             right_cond = comparison.split('_vs_')[0]
             left_cond = comparison.split('_vs_')[1]
@@ -449,18 +333,15 @@ class GetDA:
             self.ordered_dataframe['Genes'] = self.ordered_dataframe['Genes'].fillna('gene')
             num_DA = len(self.interactors_dict[comparison])
             print(num_DA)
-            num_right_DA = len(self.right_dict[comparison])
-            num_left_DA = len(self.left_dict[comparison])
+            
+            num_right_DA = len(self.right_dict[comparison]) if DA_direction.lower() in ["both", "right"] else 0
+            num_left_DA = len(self.left_dict[comparison]) if DA_direction.lower() in ["both", "left"] else 0
+
 
             # Merge with the dataframe from interactors_dict
-            merged_df = self.ordered_dataframe.merge(self.interactors_dict[comparison][['Protein_Group', 'fdr_corrected_pvals']], 
+            merged_df = self.ordered_dataframe.merge(self.interactors_dict[comparison][['Protein_Group']], 
                                                      on='Protein_Group', how='left')
-            
-            # Fill NaN values in the 'fdr_corrected_pvals' column
-            merged_df['fdr_corrected_pvals'] = merged_df['fdr_corrected_pvals'].fillna(np.nan)
-            
-            # Check if the corrected p-values meet the FDR threshold
-            merged_df['meets_FDR'] = merged_df['fdr_corrected_pvals'] <= self.pval_cutoff
+            print(merged_df)
             valid_df = merged_df.dropna(axis=0, subset=[f'{comparison}_logFC'])
             valid_prots = [prot.capitalize() for prot in valid_df['Genes'].tolist()]
             print(valid_prots[0:20])
@@ -507,12 +388,19 @@ class GetDA:
             non_POI_df = merged_df[~merged_df['Genes'].str.upper().isin(self.extra_POIs)]
 
             # Subset non-POIs
-            non_DA = non_POI_df[~non_POI_df['meets_FDR']]
+            non_DA = self.ordered_dataframe[
+                ~self.ordered_dataframe['Protein_Group'].isin(self.interactors_dict[comparison]['Protein_Group'])
+                ]
             print("SHAPE")
             print(non_DA.shape)
-            right_DA = non_POI_df[non_POI_df['Protein_Group'].isin(self.right_dict[comparison]['Protein_Group'].tolist())]
-            left_DA = non_POI_df[non_POI_df['Protein_Group'].isin(self.left_dict[comparison]['Protein_Group'].tolist())]
 
+            if DA_direction.lower() == "right":
+                right_DA = non_POI_df[non_POI_df['Protein_Group'].isin(self.right_dict[comparison]['Protein_Group'].tolist())]
+            if DA_direction.lower() == "left":
+                left_DA = non_POI_df[non_POI_df['Protein_Group'].isin(self.left_dict[comparison]['Protein_Group'].tolist())]
+            if DA_direction.lower() == "both": 
+                right_DA = non_POI_df[non_POI_df['Protein_Group'].isin(self.right_dict[comparison]['Protein_Group'].tolist())]
+                left_DA = non_POI_df[non_POI_df['Protein_Group'].isin(self.left_dict[comparison]['Protein_Group'].tolist())]    
 
             fig = make_subplots(rows=1, cols=1)
 
@@ -541,38 +429,39 @@ class GetDA:
             )
 
             # Right-side DA Proteins
-            fig.add_trace(
-                go.Scatter(
-                    x=right_DA[f'{comparison}_logFC'],
-                    y=-np.log10(right_DA[f'{comparison}_pval']),
-                    mode='markers',
-                    opacity=0.6,
-                    marker=dict(color=self.condition_colour_map[right_cond], size=8,
-                                line=dict(color='white', width=1)
-                                ),
-                    text=right_DA.apply(generate_hover_text, axis=1),
-                    hoverinfo='text',
-                    customdata=right_DA['Protein_Group'].apply(lambda x: x.split(';')[0]),
-                    name=f'Increased in {right_cond}'
+            if DA_direction.lower() in ["both", "right"]:
+                fig.add_trace(
+                    go.Scatter(
+                        x=right_DA[f'{comparison}_logFC'],
+                        y=-np.log10(right_DA[f'{comparison}_pval']),
+                        mode='markers',
+                        opacity=0.6,
+                        marker=dict(color=self.condition_colour_map[right_cond], size=8,
+                                    line=dict(color='white', width=1)
+                                    ),
+                        text=right_DA.apply(generate_hover_text, axis=1),
+                        hoverinfo='text',
+                        customdata=right_DA['Protein_Group'].apply(lambda x: x.split(';')[0]),
+                        name=f'Increased in {right_cond}'
+                    )
                 )
-            )
-
-            # Left-side DA Proteins
-            fig.add_trace(
-                go.Scatter(
-                    x=left_DA[f'{comparison}_logFC'],
-                    y=-np.log10(left_DA[f'{comparison}_pval']),
-                    mode='markers',
-                    opacity=0.6,
-                    marker=dict(color=self.condition_colour_map[left_cond], size=8,
-                                line=dict(color='white', width=1)
-                                ),
-                    text=left_DA.apply(generate_hover_text, axis=1),
-                    hoverinfo='text',
-                    customdata=left_DA['Protein_Group'].apply(lambda x: x.split(';')[0]),
-                    name=f'Decreased in {right_cond}'
+            if DA_direction.lower() in ["both", "left"]:    
+                # Left-side DA Proteins
+                fig.add_trace(
+                    go.Scatter(
+                        x=left_DA[f'{comparison}_logFC'],
+                        y=-np.log10(left_DA[f'{comparison}_pval']),
+                        mode='markers',
+                        opacity=0.6,
+                        marker=dict(color=self.condition_colour_map[left_cond], size=8,
+                                    line=dict(color='white', width=1)
+                                    ),
+                        text=left_DA.apply(generate_hover_text, axis=1),
+                        hoverinfo='text',
+                        customdata=left_DA['Protein_Group'].apply(lambda x: x.split(';')[0]),
+                        name=f'Decreased in {right_cond}'
+                    )
                 )
-            )
 
             # Separate traces for each POI
             if self.extra_POIs:
@@ -612,22 +501,23 @@ class GetDA:
             )
 
             # Wrap text for annotations
-            right_text =f'DA proteins increased: <b>{num_right_DA}</b>'
-            print(right_text)
-            fig.add_annotation(text=right_text,
-                               x=0.9, y=0.9,
-                               xref="paper",
-                               yref="paper",
-                               showarrow=False
-                               )
-
-            left_text =f'DA proteins decreased: <b>{num_left_DA}</b>'
-            fig.add_annotation(text=left_text,
-                               x=0.1, y=0.9,
-                               xref="paper",
-                               yref="paper",
-                               showarrow=False
-                               )
+            if DA_direction.lower() in ["both", "right"]:
+                right_text =f'DA proteins increased: <b>{num_right_DA}</b>'
+                print(right_text)
+                fig.add_annotation(text=right_text,
+                                x=0.9, y=0.9,
+                                xref="paper",
+                                yref="paper",
+                                showarrow=False
+                                )
+            if DA_direction.lower() in ["both", "left"]:
+                left_text =f'DA proteins decreased: <b>{num_left_DA}</b>'
+                fig.add_annotation(text=left_text,
+                                x=0.1, y=0.9,
+                                xref="paper",
+                                yref="paper",
+                                showarrow=False
+                                )
 
             fig.update_layout(
             font=dict(color='black'),
@@ -682,9 +572,9 @@ class GetDA:
         if not self.set_ids:
             self.set_ids=[str(i) for i in range(len(self.comparison_columns)*2)]
         for col,DA_direction,set_id in zip(self.comparison_columns,self.DA_directions, self.set_ids):
-            if DA_direction.lower() ==  "up":
+            if DA_direction.lower() ==  "right":
                 results_dict[str(set_id)]=self.right_dict[col]['Genes'].values.tolist() 
-            if DA_direction.lower() ==  "down":
+            if DA_direction.lower() ==  "left":
                 results_dict[str(set_id)]=self.left_dict[col]['Genes'].values.tolist()
             elif DA_direction.lower() == "both":
                 for dic,sub_set_id in zip([self.right_dict,self.left_dict],str(set_id).split(";")):
@@ -705,30 +595,30 @@ class GetDA:
 if __name__ == "__main__":
 
     condition_colour_map = {
-        "DMSO": "red",
-        "413": "blue"
+        "EV": "red",
+        "N-RANKL1": "blue"
     }
 
     da = GetDA(
-        bkgd_file=r"C:\Users\lwoods\Documents\LW_Projects_folder\09_EXT\G39_Gemma_Fabrias_Bernat_Crosas\R01_MireiaCasasempere\P01_CERT_Oncology\myE01_CERTACs\GPA_analysis\LOESS\DAPARv1.30.6_DA_Sheet1_output.tsv",
-        metadata_file=r"C:\Users\lwoods\Documents\LW_Projects_folder\09_EXT\G39_Gemma_Fabrias_Bernat_Crosas\R01_MireiaCasasempere\P01_CERT_Oncology\myE01_CERTACs\GPA_analysis\LOESS\metadata_for_DAPAR.xlsx",
-        op_folder=r"C:\Users\lwoods\Documents\LW_Projects_folder\TESTS\DIA_summarizer",
-        comparison_columns=["413_vs_DMSO"],
+        bkgd_file=r"C:\Users\lwoods\Documents\LW_Projects_folder\01_MO\G12_Eva_Gonzalez\R03_Mario_Rodriguez\P02\myE01_RANKL1_IP_triplicates\Analysis_Sheet1_DAPAR_output.tsv",
+        metadata_file=r"C:\Users\lwoods\Documents\LW_Projects_folder\01_MO\G12_Eva_Gonzalez\R03_Mario_Rodriguez\P02\myE01_RANKL1_IP_triplicates\metadata_for_DAPAR.xlsx",
+        op_folder=r"C:\Users\lwoods\Documents\LW_Projects_folder\01_MO\G12_Eva_Gonzalez\R03_Mario_Rodriguez\P02\myE01_RANKL1_IP_triplicates\TEST",
+        comparison_columns=["N-RANKL1_vs_EV"],
         pval_cutoff=0.01,
         ppushprop_th=">=0.7",
         filterprop_th=">=0.7",
         condition_colour_map=condition_colour_map,
         Log2FC_cutoff=1.0,
-        DA_directions=["up","down"],
+        DA_directions=["right"],
         set_ids=None,
         bait_gene=None,
         mark_contams=True,
         Log2FC_cutoff_operation="None",
         slope = 0.01,
         contaminants_fasta = r"C:\Users\lwoods\Documents\LW_Projects_folder\general\20210914_525_CONTAMINANTS_UNIPROT_FORMAT.fasta",
-        extra_POIs=['HMOX1', 'FAKE'],
-        POI_colour_map={'HMOX1':'green', 'FAKE':'yellow'},
+        extra_POIs=['TNFSF11', 'FAKE'],
+        POI_colour_map={'TNFSF11':'green', 'FAKE':'yellow'},
         remove_sheet = None, remove_list = None
     )
-    da.run_analysis()    
+    da.run_analysis()
 

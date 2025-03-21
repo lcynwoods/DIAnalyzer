@@ -12,7 +12,7 @@ import matplotlib.patches as mpatches
 from sklearn.preprocessing import PowerTransformer
 from yellowbrick.cluster import SilhouetteVisualizer
 
-from src.cluster_gene_lines import ClusterLinePlotter
+from cluster_gene_lines import ClusterLinePlotter
 
 
 class KMeansClustering:
@@ -81,7 +81,8 @@ class KMeansClustering:
 
         # Select relevant columns based on the column suffix
         self.cols_of_interest = [col for col in incoming_data.columns if self.col_suffix in col]
-        self.data_df = incoming_data[self.cols_of_interest]
+        self.original_data_df = incoming_data[self.cols_of_interest]
+        self.data_df = self.original_data_df.copy()
 
 
         new_cols = [col.replace(f'_{self.col_suffix}', '').replace('Intensity_', '') for col in self.data_df.columns]
@@ -207,6 +208,8 @@ class KMeansClustering:
         row_colors = [cluster_colors[label] for label in self.cluster_labels]
 
         plot_data = self.data_df.drop(columns=['Cluster', 'InitialCluster'])
+        new_cols = [col.replace(f'_{self.col_suffix}', '').replace('Intensity_', '') for col in self.original_data_df.columns]
+        plot_data.columns = new_cols
 
         # Define a color palette and map conditions to colors
         condition_map = dict(zip(self.conditions_df['Sample.Name'], self.conditions_df['Condition']))
@@ -219,96 +222,27 @@ class KMeansClustering:
             condition_colour_map = self.colour_map
 
         # Create column colors in the same order as the columns in self.data_df
-        self.col_colors = [condition_colour_map[condition_map[col]] for col in plot_data.columns]
+        print(plot_data.columns)
+        ###
+        import dash_bio
 
+        num_cols = len(plot_data.columns)
+        column_positions = np.linspace(0, 1, num_cols)  # Evenly spaced between 0 and 1
 
-        BOTTOM = 0.15
-        RIGHT = 0.85
-
-        def shifter(value_list):
-            count_list = []
-            for word in value_list:
-                count = 0
-                for char in word:
-                    count += 1
-                count_list.append(count)
-            max_chars = max(count_list)
-            shift = float(max_chars-20)/100
-            if shift > 0:
-                return shift
-            else:
-                return 0
-
-        BOTTOM += shifter(self.conditions_df['Sample.Name'].values)
-        RIGHT -= shifter(self.conditions_df['Condition'].values)
-
-        print(f"Bottom: {BOTTOM}")
-        print(f"Right: {RIGHT}")
-
-        # Create clustermap with rows ordered by the linkage matrix
-        g = sns.clustermap(
-            data=plot_data,
-            row_linkage=new_linkage_matrix,
-            col_cluster=False,
-            cmap='coolwarm',
-            figsize=(19, 12),
-            row_colors=row_colors,
-            col_colors=self.col_colors,  # Column colors based on conditions
-            cbar_pos=([RIGHT+0.01, 0.825, 0.1, 0.04]),
-            cbar_kws=dict(label='log2(Intensity) z-score', orientation='horizontal'),
-            vmin=-2.5,
-            vmax=2.5,
-            yticklabels=False
+        fig = dash_bio.Clustergram(
+            
+            data=plot_data.values,
+            cluster='rows',
+            row_labels=list(plot_data.index),  # Gene names
+            column_labels=list(plot_data.columns),  # Sample names
+            column_colors=column_colors,  # Fix format
+            color_map="RdBu_r",
+            height=800,
+            width=1600
         )
 
-        g.figure.subplots_adjust(top=1)  # Adjust the top to give space for the title
-        
+        fig.show()
 
-        # Adjust the heatmap labels
-        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), fontsize=10, rotation=45, ha='right')
-        g.ax_heatmap.set_ylabel("")
-
-        # Creating the cluster legend
-        cluster_counts = {cluster: sum(self.cluster_labels == cluster) for cluster in unique_clusters}
-        cluster_patches = [mpatches.Patch(color=cluster_colors[i], label=f'Cluster {i+1} (n={cluster_counts[i]})') for i in range(len(unique_clusters))]
-
-
-        # Creating the condition legend
-        condition_legend_patches = [mpatches.Patch(color=condition_colour_map[cond], label=cond) for cond in condition_colour_map]
-
-        blank_patch = mpatches.Patch(color='white', label='')
-
-        # Combine both legends (clusters + blank patch + conditions)
-        legend_patches = cluster_patches + [blank_patch] + condition_legend_patches
-
-        plt.subplots_adjust(bottom=BOTTOM, right=RIGHT)
-        g.ax_cbar.set_position([RIGHT+0.01, 0.925, 0.1, 0.04])
-
-        # Add combined legend for clusters and conditions
-        g.ax_heatmap.legend(handles=legend_patches, loc='upper left', bbox_to_anchor=(1, 1), fontsize=12, frameon=False)
-
-        # Show the plot
-        #plt.show()
-
-        #col_order = g.dendrogram_col.reordered_ind
-        #print("Column order after clustering:", col_order)
-
-        # Save the reordered columns for later use
-        self.ordered_columns = plot_data.columns
-
-        g.figure.suptitle(x=0.05, y=0.98, ha='left', t=f"Hierarchical KMeans Clustering of Differentially Abundant Protein Intensities (n={int(len(plot_data))})", fontsize=16)
-        g.figure.text(
-            0.05, 0.93,
-            "Initial clustering with Ward's Method, distance = 1 - Pearson Correlation; KMeans cluster number (4-10) determined by best silhouette score",
-            ha='left',  # Align text to center
-            fontsize=12
-        )
-
-        hcluster_stem = Path(self.op_file).stem
-        hcluster_path = Path(self.op_dir) / f'{hcluster_stem}.png'
-        plt.savefig(hcluster_path)
-        plt.close()
-        #plt.show()
 
     def write_excel_output(self):
         # Write the ordered columns to Excel

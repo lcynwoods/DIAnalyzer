@@ -1,90 +1,83 @@
-"""Send to GitHub"""
-
 import os
 import subprocess
+import shutil
 from pathlib import Path
 
-import os
-import subprocess
-from pathlib import Path
-
-def upload_html_to_github(repo_url, folder_path, token, branch="gh-pages", commit_message="Deploy HTMLs to GitHub Pages"):
+def upload_html_to_github(repo_url, analysis_output, local_repo_path, token, branch="gh-pages", commit_message="Deploy HTMLs to GitHub Pages"):
     try:
         cwd = os.getcwd()
-        # Update repo_url to include the token for authentication
-        authenticated_repo_url = repo_url.replace("https://", f"https://{token}@")
-
-        os.chdir(folder_path)
         git_path = r"C:\\Users\\lwoods\\AppData\\Local\\GitHubDesktop\\app-3.4.9\\resources\\app\\git\\cmd\\git.exe"
 
-        # Initialize a new git repository (if it's not already a git repository)
-        if not (Path(folder_path) / ".git").exists():
-            subprocess.run([git_path, "init"], check=True)
-
-        # Check if the remote 'origin' already exists
-        try:
-            existing_remotes = subprocess.check_output([git_path, "remote", "-v"], text=True).strip()
-            if "origin" in existing_remotes:
-                # Update the remote URL if it already exists
-                subprocess.run([git_path, "remote", "set-url", "origin", authenticated_repo_url], check=True)
-            else:
-                # Add the remote repository
-                subprocess.run([git_path, "remote", "add", "origin", authenticated_repo_url], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to check or set the remote: {e}")
-
-        # Checkout the branch for GitHub Pages
-        print(1)
-        subprocess.run([git_path, "checkout", "-B", branch], check=True)
-
-        # Collect all .html files with a path length limit
-        max_path_length = 260
-        html_files = [
-            os.path.relpath(os.path.join(root, file), folder_path)
-            for root, _, files in os.walk(folder_path)
-            for file in files if file.endswith(".html") and len(os.path.join(root, file)) < max_path_length
-        ]
-
-        ext = [".html", ".png"]
-
-        viz_files = [
-            os.path.relpath(os.path.join(root, file), folder_path)
-            for root, _, files in os.walk(folder_path)
-            for file in files if file.endswith(tuple(ext)) and len(os.path.join(root, file)) < max_path_length
-        ]
-
-        if not html_files:
-            print("No HTML files found or all file paths exceed the maximum length. Exiting without making changes.")
+        # Find the _data folder
+        data_folder = Path(analysis_output) / (Path(analysis_output).name + "_data")
+        if not data_folder.exists():
+            print(f"Error: {data_folder} does not exist.")
             return
 
-        print(3)
-        # Remove previously staged files to avoid uploading non-HTML files
-                # Check if there are any staged files before attempting to remove them
-        try:
-            staged_files = subprocess.check_output([git_path, "ls-files"], text=True).strip()
-            if staged_files:
-                # Remove previously staged files to avoid uploading non-HTML files
-                subprocess.run([git_path, "rm", "-r", "--cached", "."], check=True)
-            else:
-                print("No staged files to remove.")
-        except subprocess.CalledProcessError as e:
-            print(f"Error checking staged files: {e}")
+        print(f"Uploading folder: {data_folder}")
 
-        print(4)
-        # Add only HTML files to staging
-        for relative_path in viz_files:
-            subprocess.run([git_path, "add", relative_path], check=True)
+        # Ensure local repo exists
+        if not Path(local_repo_path).exists():
+            print(f"Cloning repository into {local_repo_path}...")
+            subprocess.run([git_path, "clone", repo_url, local_repo_path], check=True)
 
-        # Commit the changes
-        print(5)
-        subprocess.run([git_path, "commit", "-m", commit_message], check=True)
+        os.chdir(local_repo_path)
 
-        # Push to the GitHub Pages branch
-        subprocess.run([git_path, "push", "-u", "origin", branch, "--force"], check=True)
+        # Set authenticated remote URL
+        authenticated_repo_url = repo_url.replace("https://", f"https://{token}@")
+        subprocess.run([git_path, "remote", "set-url", "origin", authenticated_repo_url], check=True)
 
-        print("HTML files successfully uploaded to GitHub Pages.")
+        # Checkout the correct branch
+        subprocess.run([git_path, "fetch", "origin"], check=True)
+        subprocess.run([git_path, "checkout", branch], check=True)
+        subprocess.run([git_path, "pull", "--rebase", "origin", branch], check=True)
+
+        # Define destination for _data folder inside the repo
+        dest_data_folder = Path(local_repo_path) / data_folder.name
+
+        # Remove old _data folder in the repo
+        if dest_data_folder.exists():
+            shutil.rmtree(dest_data_folder)
+
+        # Copy only .html and .png files, retaining structure
+        exts = (".html", ".png")
+        for root, _, files in os.walk(data_folder):
+            for file in files:
+                if file.endswith(exts):
+                    src_file = Path(root) / file
+                    rel_path = src_file.relative_to(data_folder)
+                    dest_file = dest_data_folder / rel_path
+
+                    # Ensure the directory exists
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    # Copy the file
+                    shutil.copy2(src_file, dest_file)
+                    print(f"Copied: {src_file} -> {dest_file}")
+
+        # Stage only the _data folder
+        subprocess.run([git_path, "add", str(dest_data_folder)], check=True)
+
+        # Check if there are staged changes before committing
+        status_output = subprocess.run([git_path, "status", "--porcelain"], capture_output=True, text=True).stdout
+
+        if status_output.strip():  # If there are changes
+            subprocess.run([git_path, "commit", "-m", commit_message], check=True)
+            subprocess.run([git_path, "push", "origin", branch], check=True)
+            print("Changes pushed successfully.")
+        else:
+            print("No changes detected. Skipping commit & push.")
+
+
+        # Push changes safely
+        subprocess.run([git_path, "push", "origin", branch], check=True)
+
+        print("HTML & PNG files successfully uploaded to GitHub Pages.")
         os.chdir(cwd)
+
     except subprocess.CalledProcessError as e:
-        print(f"An error occurred during a git operation: {e}")
+        print(f"Git error: {e}")
+
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"Unexpected error: {e}")
+
