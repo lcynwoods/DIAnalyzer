@@ -2,11 +2,22 @@
 """
 Created on Wed Aug 30 15:34:12 2023
 
-@author: lwoods
+...
 """
+
+import sys
+import os
+import getpass
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.common_classes import *
 from src.analysis_loop import AnalysisLoop
+from src.setup_utils import check_inputs, create_folders_and_logger
+from src.data_prep_utils import perform_data_prep, sort_data_and_assign_colours
 
 class DIAnalyzer:
     """
@@ -20,7 +31,7 @@ class DIAnalyzer:
                  min_pepts=2, biomolecule_level='Protein', species_id=9606,
                  reference_condition=None, contaminants_fasta=None,
                  mark_contaminants=False, trispecies_test=False,
-                 gene_sets=None,
+                 gene_sets =['GO_Biological_Process_2023', 'MSigDB_Hallmark_2020'],
                  log_file=None):
         """
         Initialize the DIAnalyzer class.
@@ -67,7 +78,7 @@ class DIAnalyzer:
         self.min_pepts = min_pepts
         self.biomolecule_level = biomolecule_level
         self.species_id = species_id
-        self.reference_conditon = reference_condition
+        self.reference_condition = reference_condition
         self.POC = POC
         self.contaminants_fasta = contaminants_fasta
         self.mark_contaminants = mark_contaminants
@@ -79,11 +90,15 @@ class DIAnalyzer:
         self.html_template = config['html_template']
         self.colour_palette = config['colour_palette']
         self.r_exe_path = str(Path(config['r_exe_path']))
-        self.r_script_path = str(Path(config['r_script_path']))
+        self.r_DAPAR_path = str(Path(config['r_DAPAR_path']))
+        self.r_rrvgo_path = str(Path(config['r_rrvgo_path']))
         self.format = data_source  # 'Spectronaut' or 'DIANN'
         self.column_mapping = config[self.format]  # Get the mapping for the selected format
-        self.gh_token = config['gh_token']
         self.gh_repo = config['gh_repo']
+        self.local_repo_parent = config['local_repo_parent']
+        self.gh_token = os.getenv('GH_TOKEN')
+        self.username = getpass.getuser()
+        self.colour_palette = config['colour_palette']  
 
         # Initialize some vars
         self.report_data = {
@@ -102,78 +117,29 @@ class DIAnalyzer:
         #self.intensity_per_prot_df = None
         #self.pivoted=None
 
-    def check_inputs(self):
-        print(self.use_DIANN_maxLFQ)
-        inputs = [self.spec_report, self.conditions_file, self.analyses_file]
-        not_found = []
-        for inp in inputs:
-            if not Path(inp).exists():
-                not_found.append(inp)
-        
-        if not_found:
-            if len(not_found) > 1:
-                not_found_str = ', '.join(not_found[:-1]) + ' and ' + not_found[-1]
-            else:
-                not_found_str = not_found[0]
-            print('The following inputs do not exist:')
-            print(not_found_str)
-        
-    def make_op_folder_and_logger(self):
-        if not Path(self.op_folder).exists():
-            Path(self.op_folder).mkdir(parents=True)
-        job_name = Path(self.op_folder).stem
-        plot_folder = Path(self.op_folder) /f'{job_name}_data' / 'plots'
-        plot_folder.mkdir(exist_ok=True, parents=True)
-        summary_data_folder = plot_folder / 'summary_data'
-        summary_data_folder.mkdir(exist_ok=True, parents=True)
-        
-        if not self.log_file:
-            self.log_file = Path(self.op_folder) / 'log.log'
-        logging.basicConfig(filename=self.log_file,
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            force=True)
-    
-    def perform_data_prep(self):
-        PEPTIDES_TO_REMOVE = None
-        MIN_PEPTS = None
-
-        if self.peptides_to_remove:
-            PEPTIDES_TO_REMOVE = self.peptides_to_remove.strip().split(',')
-        if self.min_pepts:
-            try:
-                MIN_PEPTS = int(self.min_pepts)
-                if MIN_PEPTS <= 0:
-                    MIN_PEPTS = 2
-            except:
-                MIN_PEPTS = 2
-
-        prepare_data_obj = PrepareData(
-            spec_report = self.spec_report,
-            conditions_file = self.conditions_file,
-            column_mapping = self.column_mapping,
-            reattribute_peptides = self.reattribute_peptides,
-            peptides_to_remove = PEPTIDES_TO_REMOVE,
-            remove_outliers = self.remove_outliers,
-            min_pepts = MIN_PEPTS,
-            log_file = self.log_file,
-            report_data = self.report_data
+    def setup(self):
+        check_inputs(
+            self.spec_report, self.conditions_file, self.analyses_file, self.op_folder,
+            self.r_exe_path, self.r_DAPAR_path, self.r_rrvgo_path, self.species_id, self.gh_token
         )
-        self.spec_full_df, self.conditions_df = prepare_data_obj.run()
+        create_folders_and_logger(self.op_folder, self.log_file)
+
+    def perform_data_prep(self):
+        self.spec_full_df, self.conditions_df = perform_data_prep(
+            self.spec_report, self.conditions_file, self.column_mapping, self.reattribute_peptides,
+            self.peptides_to_remove, self.remove_outliers, self.min_pepts, self.log_file, self.report_data
+        )
 
     def sort_data_and_assign_colours(self):
-        condition_sorter = ConditionSort(self.conditions_df, map_strategy='as_is')
-        self.sorted_conditions = condition_sorter.sort()
-        if not self.reference_conditon:
-            self.reference_conditon = self.sorted_conditions[0]
-        self.colour_mapper = {condition: color for condition, color in zip(self.sorted_conditions, self.colour_palette)}       
-        self.POIs, self.POI_colour_map = condition_sorter.fetch_POI_data()
+        self.sorted_conditions, self.reference_condition, self.colour_mapper, self.POIs, self.POI_colour_map = sort_data_and_assign_colours(
+            self.conditions_df, self.reference_condition, self.colour_palette
+        )
     
     def perform_quantification_data_analysis(self):
         print(self.use_DIANN_maxLFQ)
         job_name = Path(self.op_folder).stem
-        plot_folder = Path(self.op_folder) /f'{job_name}_data' / 'plots'
-        intermediate_folder = Path(self.op_folder) /f'{job_name}_data' / 'intermediate_files'
+        plot_folder = Path(self.op_folder) / f'{job_name}_data' / 'plots'
+        intermediate_folder = Path(self.op_folder) / f'{job_name}_data' / 'intermediate_files'
         summary_data_folder = plot_folder / 'summary_data'
         summary_intermediate_op_folder = intermediate_folder / 'summary_data'
         for folder in [summary_data_folder, summary_intermediate_op_folder]:
@@ -185,39 +151,39 @@ class DIAnalyzer:
             colour_map=self.colour_mapper,
             log_file=self.log_file,
             op_folder=summary_data_folder,
-            intermediate_op_folder = summary_intermediate_op_folder,
+            intermediate_op_folder=summary_intermediate_op_folder,
             use_DIANN_maxLFQ=self.use_DIANN_maxLFQ,
             biomolecule_level=self.biomolecule_level,
             POIs=self.POIs,
             POI_colour_map=self.POI_colour_map,
             #is_IP=self.is_IP,
             #is_POC=self.is_POC,
-            report_data = self.report_data
+            report_data=self.report_data
         )
         self.spec_full_df = quantification_data.run()
 
     def perform_overview_data_analysis(self):
         print(self.use_DIANN_maxLFQ)
         job_name = Path(self.op_folder).stem
-        plot_folder = Path(self.op_folder) /f'{job_name}_data' / 'plots'
+        plot_folder = Path(self.op_folder) / f'{job_name}_data' / 'plots'
         plot_folder.mkdir(exist_ok=True, parents=True)
         summary_data_folder = plot_folder / 'summary_data'
         overview_data = OverviewAnalysis(
-            filtered_df = self.spec_full_df,
-            conditions_df = self.conditions_df,
-            sorted_conditions = self.sorted_conditions,
+            filtered_df=self.spec_full_df,
+            conditions_df=self.conditions_df,
+            sorted_conditions=self.sorted_conditions,
             column_mapping=self.column_mapping,     
-            colour_map = self.colour_mapper,
-            op_folder = summary_data_folder,
+            colour_map=self.colour_mapper,
+            op_folder=summary_data_folder,
             use_DIANN_maxLFQ=self.use_DIANN_maxLFQ,
             log_file=self.log_file,
-            report_data = self.report_data
+            report_data=self.report_data
         )
         overview_data.run()
 
     def loop_through_analyses(self):
         job_name = Path(self.op_folder).stem
-        intermediate_folder = Path(self.op_folder) /f'{job_name}_data' / 'intermediate_files' / 'summary_data'
+        intermediate_folder = Path(self.op_folder) / f'{job_name}_data' / 'intermediate_files' / 'summary_data'
 
         my_analyses = AnalysisLoop(
             self.analyses_file,
@@ -225,18 +191,19 @@ class DIAnalyzer:
             self.conditions_df,
             self.op_folder,
             self.r_exe_path,
-            self.r_script_path,
+            self.r_DAPAR_path,
+            self.r_rrvgo_path,
             self.colour_mapper,
             sorted_conditions=self.sorted_conditions,
-            reference_condition=self.reference_conditon,
+            reference_condition=self.reference_condition,
             POIs=self.POIs,
             POI_colour_map=self.POI_colour_map,
             use_DIANN_maxLFQ=self.use_DIANN_maxLFQ,
-            biomolecule_level = self.biomolecule_level,
+            biomolecule_level=self.biomolecule_level,
             species_id=self.species_id,
             POC=self.POC,
-            contaminants_fasta = self.contaminants_fasta,
-            mark_contaminants = self.mark_contaminants,
+            contaminants_fasta=self.contaminants_fasta,
+            mark_contaminants=self.mark_contaminants,
             gene_sets=self.gene_sets
         )
         my_analyses.run()
@@ -244,13 +211,12 @@ class DIAnalyzer:
     def push_to_github(self):
         repo_url = self.gh_repo
         folder_path = self.op_folder
+        local_repo_path = Path(self.local_repo_parent) / self.username / self.gh_repo.split('/')[-1]
         token = self.gh_token
-        upload_html_to_github(repo_url, folder_path, token)
-
+        upload_html_to_github(repo_url, folder_path, local_repo_path, token)
 
     def run(self):
-        self.check_inputs()
-        self.make_op_folder_and_logger()
+        self.setup()
         self.perform_data_prep()
         self.sort_data_and_assign_colours()
         self.perform_quantification_data_analysis()
@@ -262,17 +228,17 @@ class DIAnalyzer:
         #self.generate_html_report()
 
 if __name__ == "__main__":
-    SPEC_REPORT = r"C:\Users\lwoods\Documents\LW_Projects_folder\09_EXT\G42_MiguelPrado\diann_report.parquet"
-    CONDITIONS_FILE = r"C:\Users\lwoods\Documents\LW_Projects_folder\09_EXT\G42_MiguelPrado\Conditions.xlsx"
-    ANALYSES_FILE = r"C:\Users\lwoods\Documents\LW_Projects_folder\09_EXT\G42_MiguelPrado\AnalysesFull.xlsx"
-    OP_FOLDER =  r"C:\Users\lwoods\Documents\LW_Projects_folder\09_EXT\G42_MiguelPrado\TEST"
+    SPEC_REPORT = r"C:\Users\lwoods\Documents\LW_Projects_folder\01_MO\G12_Eva_Gonzalez\R03_Mario_Rodriguez\P02\myE01_RANKL1_IP_triplicates\20250320122458_51676a6c-4e27-4917-b4e6-5a6dfc4a47c6_subset\diannsummary\diann_report.parquet"
+    CONDITIONS_FILE = r"\\bespin\Biotechnology\Proteomics\01_MO\G12_Eva_Gonzalez\R03_Mario Rodriguez\P02_RANKL1_IP\E02_RANKL1_Nt_Turbo_Triplicates\conditions.xlsx"
+    ANALYSES_FILE = r"\\bespin\Biotechnology\Proteomics\01_MO\G12_Eva_Gonzalez\R03_Mario Rodriguez\P02_RANKL1_IP\E02_RANKL1_Nt_Turbo_Triplicates\analyses.xlsx"
+    OP_FOLDER =  r"C:\Users\lwoods\Documents\LW_Projects_folder\01_MO\G12_Eva_Gonzalez\R03_Mario_Rodriguez\P02\myE01_RANKL1_IP_triplicates"
     REMOVE_OUTLIERS = False
     POC = False
     USE_DIANN_MAXLFQ = False
     SPECIES_ID = 9606
     # integer, no range
     MIN_PEPTS = 2
-    REFERENCE_CONDITION = "Control"
+    REFERENCE_CONDITION = "EV"
     MARK_CONTAMINANTS = True
     CONTAMINANTS_FASTA = r"C:\Users\lwoods\Documents\LW_Projects_folder\general\20210914_525_CONTAMINANTS_UNIPROT_FORMAT.fasta"
     TRISPECIES_TEST = False
@@ -284,14 +250,14 @@ if __name__ == "__main__":
         analyses_file=ANALYSES_FILE,
         op_folder=OP_FOLDER,
         remove_outliers=REMOVE_OUTLIERS,
-        use_DIANN_maxLFQ = USE_DIANN_MAXLFQ,
-        species_id = SPECIES_ID,
+        use_DIANN_maxLFQ=USE_DIANN_MAXLFQ,
+        species_id=SPECIES_ID,
         min_pepts=MIN_PEPTS,
-        reference_condition = REFERENCE_CONDITION,
+        reference_condition=REFERENCE_CONDITION,
         POC=POC,
-        contaminants_fasta = CONTAMINANTS_FASTA,
+        contaminants_fasta=CONTAMINANTS_FASTA,
         mark_contaminants=MARK_CONTAMINANTS,
-        trispecies_test = TRISPECIES_TEST
-        )
+        trispecies_test=TRISPECIES_TEST
+    )
     analyzer.run()
     logging.shutdown()
